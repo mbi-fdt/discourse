@@ -10,18 +10,42 @@
 #
 # - from: The notification type of the unconsolidated notification. e.g. `Notification.types[:private_message]`
 # - to: The type the consolidated notification will have. You can use the same value as from to flatten notifications or bump existing ones.
-# - set_data_blk: A block that receives the notification data hash and mutates it, adding additional data needed for consolidation.
-# - precondition_blk: A block that receives the mutated data and returns true if we have everything we need to consolidate.
 # - threshold: If creating a new notification would match this number, we'll destroy existing ones and create a consolidated one.
+# - consolidation_window: Only consolidate notifications created since this value (Pass a ActiveSupport::Duration instance, and we'll call #ago on it).
+# - unconsolidated_query_blk: A block with additional queries to apple when fetching for unconsolidated notifications.
+# - consolidated_query_blk: A block with additional queries to apply when fetching for a consolidated notification.
+#
+# Need to call #set_precondition to configure this:
+#
+# - precondition_blk: A block that receives the mutated data and returns true if we have everything we need to consolidate.
+#
+# Need to call #set_mutations to configure this:
+#
+# - set_data_blk: A block that receives the notification data hash and mutates it, adding additional data needed for consolidation.
 
 module Notifications
   class ConsolidateNotifications
-    def initialize(from:, to:, set_data_blk:, precondition_blk:, threshold:)
+    def initialize(from:, to:, consolidation_window: nil, unconsolidated_query_blk: nil, consolidated_query_blk: nil, threshold:)
       @from = from
       @to = to
-      @set_data_blk = set_data_blk
-      @precondition_blk = precondition_blk
       @threshold = threshold
+      @consolidation_window = consolidation_window
+      @consolidated_query_blk = consolidated_query_blk
+      @unconsolidated_query_blk = unconsolidated_query_blk
+      @precondition_blk = nil
+      @set_data_blk = nil
+    end
+
+    def set_precondition(precondition_blk: nil)
+      @precondition_blk = precondition_blk
+
+      self
+    end
+
+    def set_mutations(set_data_blk: nil)
+      @set_data_blk = set_data_blk
+
+      self
     end
 
     def can_consolidate_data?(notification)
@@ -29,6 +53,8 @@ module Notifications
       return false if notification.notification_type != from
 
       @data = consolidated_data(notification)
+
+      return true if @precondition_blk.nil?
       @precondition_blk.call(data)
     end
 
@@ -43,14 +69,19 @@ module Notifications
 
     private
 
-    attr_reader :notification, :from, :to, :data, :threshold
+    attr_reader :notification, :from, :to, :data, :threshold, :consolidated_query_blk, :unconsolidated_query_blk, :consolidation_window
 
     def consolidated_data(notification)
-      @set_data_blk.call(notification.data_hash)
+      return notification.data_hash if @set_data_blk.nil?
+      @set_data_blk.call(notification)
     end
 
     def update_consolidated_notification!(notification)
-      consolidated = user_notifications(notification).filter_by_consolidation_data(to, data).first
+      notifications = user_notifications(notification, to)
+      if consolidated_query_blk.present?
+        notifications = consolidated_query_blk.call(notifications, data)
+      end
+      consolidated = notifications.first
       return if consolidated.blank?
 
       data_hash = consolidated.data_hash.merge(data)
@@ -69,7 +100,10 @@ module Notifications
     end
 
     def create_consolidated_notification!(notification)
-      notifications = user_notifications(notification).unread.filter_by_consolidation_data(from, data)
+      notifications = user_notifications(notification, from)
+      if unconsolidated_query_blk.present?
+        notifications = unconsolidated_query_blk.call(notifications, data)
+      end
 
       # Saving the new notification would pass the threshold? Consolidate instead.
       count_after_saving_notification = notifications.count + 1
@@ -81,6 +115,8 @@ module Notifications
       consolidated = nil
 
       Notification.transaction do
+        notifications.destroy_all
+
         consolidated = Notification.create!(
           notification_type: to,
           user_id: notification.user_id,
@@ -88,15 +124,20 @@ module Notifications
           updated_at: timestamp,
           created_at: timestamp
         )
-
-        notifications.destroy_all
       end
 
       consolidated
     end
 
-    def user_notifications(notification)
-      notification.user.notifications
+    def user_notifications(notification, type)
+      notifications = notification.user.notifications
+        .where(notification_type: type)
+
+      if consolidation_window.present?
+        notifications = notifications.where('created_at > ?', consolidation_window.ago)
+      end
+
+      notifications
     end
 
     def timestamp
