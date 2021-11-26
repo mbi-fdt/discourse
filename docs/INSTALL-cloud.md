@@ -1,197 +1,248 @@
-**Set up Discourse in the cloud in under 30 minutes** with zero knowledge of Rails or Linux shell. One example
-is [DigitalOcean][do], but these steps will work on any **Docker-compatible** cloud provider or local server. This
-walkthrough will go through these in detail:
+![Melba](https://prismic-io.s3.amazonaws.com/foodmeup-landing/a3222f3f-c3ae-479a-bbe0-e0849a783ad5_melba-byfmu.svg)
+
+# Summary
+
+- [On AWS](#on-aws)
+  - [Create Security Groups](#create-security-groups)
+  - [Create an EC2 Instance](#create-an-ec2-instance)
+  - [Route 53](#route-53)
+  - [CloudFront](#cloudfront)
+- [Installation and configuration of Disourse](#installation-and-configuration-of-disourse)
+  - [Requirements](#requirements)
+  - [Reverse proxy (on the discourse instance)](#reverse-proxy-on-the-discourse-instance)
+    - [Installation - Reverse proxy](#installation-of-reverse-proxy)
+    - [Setup - Reverse proxy](#setup-of-reverse-proxy)
+  - [Discourse](#discourse)
+    - [Requirements - Discourse](#requirements-of-discourse)
+    - [Installation - Discourse](#installation-of-discourse)
+    - [Setup - Discourse](#setup-of-discourse)
+- [Add a new language](#add-a-new-language)
+
+# On AWS
+
+## Create Security Groups:
 
-1. [Create new cloud server](#1-create-new-cloud-server)
-2. [Access new cloud server](#2-access-your-cloud-server)
-3. [Install Discourse](#3-install-discourse)
-4. [Setting up email](#4-setting-up-email)
-5. [Customize domain name](#5-customize-domain-name)
-6. [Edit Discourse configuration](#6-edit-discourse-configuration)
-7. [Start Discourse](#7-start-discourse)
-8. [Register new account and become admin](#8-register-new-account-and-become-admin)
-9. [Post-install maintenance](#9-post-install-maintenance)
-10. [(Optional) Add more Discourse features](#10-optional-add-more-discourse-features)
+We'll create new security groups to allow HTTP, HTTPS, and the new SSH port (36987)
 
-> 🔔 Don't have 30 minutes to set this up? For a flat one-time fee of $150, the community can install Discourse in the cloud for you. [Click here to purchase a self-supported community install](https://www.literatecomputing.com/product/discourse-install/).
+#### HTTP
+- <u>Security group name</u>: allow-http-from-all
+- <u>Inbound rules</u> --> Add rule
+  - <u>Type</u>: HTTP
+  - <u>Port range</u>: 80
+  - <u>Source</u>: 0.0.0.0/0
 
-### 1. Create New Cloud Server
+- <u>Outbound rules</u>:
+  Keep default values (allow for all)
 
-Create your new cloud server, for example [on DigitalOcean][do]:
+#### HTTPS
+- <u>Security group name</u>: allow-https-from-all
+- <u>Inbound rules</u> --> Add rule
+  - <u>Type</u>: HTTPS
+  - <u>Port range</u>: 443
+  - <u>Source</u>: 0.0.0.0/0
 
-- The default of **the current supported LTS release of Ubuntu Server** works fine. At minimum, a 64-bit Linux OS with a
-  modern kernel version is required.
+- <u>Outbound rules</u>:
+  Keep default values (allow for all)
 
-- The default of **1 GB** RAM works fine for small Discourse communities. We recommend 2 GB RAM for larger communities.
+#### SSH (22)
+- <u>Security group name</u>: allow-ssh-default
+- <u>Inbound rules</u> --> Add rule
+  - <u>Type</u>: SSH
+  - <u>Port range</u>: 22
+  - <u>Source</u>: 0.0.0.0/0
 
-- The default of **New York** is a good choice for most US and European audiences. Or select a region that is geographically closer to your audience.
+- <u>Outbound rules</u>:
+  Keep default values (allow for all)
 
-- Enter your domain `discourse.example.com` as the Droplet name.
+#### SSH (36987)
+- <u>Security group name</u>: allow-ssh-from-all-on-port-36987
+- <u>Inbound rules</u> --> Add rule
+  - <u>Type</u>: Custom TCP
+  - <u>Port range</u>: 36987
+  - <u>Source</u>: 0.0.0.0/0
 
-Create your new Droplet. You may receive an email with the root password, however, [you should set up SSH keys](https://www.google.com/search?q=digitalocean+ssh+keys), as they are more secure.
+- <u>Outbound rules</u>:
+  Keep default values (allow for all)
 
-### 2. Access Your Cloud Server
+#### OUTPUT
+- <u>Security group name</u>: output-to-all
+- <u>Inbound rules</u>:
+  Nothing
+- <u>Outbound rules</u>:
+  Keep default values (allow for all)
 
-Connect to your server via its IP address using SSH, or [Putty][put] on Windows:
+## Create an EC2 Instance:
 
-    ssh root@192.168.1.1
+- Create an EC2 instance with Alpine image:
+  - <u>Choose AMI</u>: <b>alpine-ami-3.14.2-x86_64-r0</b> in Community AMIs
+  - <u>Choose Instance Type</u>: <b>t3.small</b> minimum
+  - <u>Configure Instance</u>: Keep all default values
+  - <u>Add Storage</u>: Size: <b>50Go</b>, Volume Type: <b>gp3</b>
+  - <u>Add tags</u>: None
+  - <u>Configure Security Group</u>: <b>allow-ssh-default, allow-http-from-all,	allow-https-from-all, allow-ssh-from-all-on-port-36987, output-to-all</b>
+  - <u>Review Instance Launch</u>
 
-Either use the root password from the email DigitalOcean sent you when the server was set up, or have a valid SSH key configured on your local machine.
 
-### 3. Install Discourse
+## Route 53:
 
-Clone the [Official Discourse Docker Image][dd] into `/var/discourse`.
+- Add a new DNS A record contain the IP adress of the instance previously created.
+<u>Record name</u>: forum.melba.io
 
-    sudo -s
-    git clone https://github.com/discourse/discourse_docker.git /var/discourse
-    cd /var/discourse
+## CloudFront:
 
-You will need to be root through the rest of the setup and bootstrap process.
+- Add forum.melba.io as a new origin
 
-### 4. Setting Up Email
+- Add 2 behaviours with the followings parameters:
+	- Path pattern: /fr/forum
+    - Origin: forum.melba.io
+    - Viewer protocol policy: Redirect HTTP to HTTPS
+    - Cache policy name: Managed-CachingDisabled
+    - Origin request policy name: Managed-AllViewer
+- Second one:
+	- Path pattern: /fr/forum/*
+    - Origin: forum.melba.io
+    - Viewer protocol policy: Redirect HTTP to HTTPS
+    - Cache policy name: Managed-CachingDisabled
+    - Origin request policy name: Managed-AllViewer
 
-> ⚠️ **Email is CRITICAL for account creation and notifications in Discourse.** If you do not properly configure email before bootstrapping YOU WILL HAVE A BROKEN SITE!
 
-> 💡 Email here refers to [Transactional Email](https://www.google.com/search?q=what+is+transactional+email) not the usual email service like Gmail, Outlook and/or Yahoo.
+# Installation and configuration of Disourse
 
-- No existing mail server? Check out our [**Recommended Email Providers for Discourse**][mailconfig].
+## Requirements
 
-- Already have a mail server? Great. Use your existing mail server credentials. (Free email services like Gmail/Outlook/Yahoo do not support transactional emails.)
+### SSH
+- Connect with SSH on the discourse instance previously created.
 
-- To ensure mail deliverability, you must add valid [SPF and DKIM records](https://www.google.com/search?q=what+is+spf+dkim) in your DNS. See your mail provider instructions for specifics.
+`ssh -i fmu.pem alpine@13.38.63.6`
 
-- If you're having trouble getting emails to work, follow our [Email Troubleshooting Guide](https://meta.discourse.org/t/troubleshooting-email-on-a-new-discourse-install/16326)
+`sudo -s` to pass root
 
-### 5. Customize Domain Name
+- Change the ssh port in `/etc/ssh/sshd_config`. Put <b>36987</b> value for the new port
 
-> 🔔 Discourse will not work from an IP address, you must own a domain name such as `example.com` to proceed.
+- Restart SSH
 
-- Already own a domain name? Great. Select a subdomain such as `discourse.example.com` or `talk.example.com` or `forum.example.com` for your Discourse instance.
+- Reconnect with SSH with new port on discourse instance:
 
-- No domain name? Get one! We can [recommend NameCheap](https://www.namecheap.com/domains/domain-name-search/), or there are many other [great domain name registrars](https://www.google.com/search?q=best+domain+name+registrars) to choose from.
+`ssh -i fmu.pem alpine@13.38.63.6 -p 36987`
 
-- Your DNS controls should be accessible from the place where you purchased your domain name. Create a DNS [`A` record](https://support.dnsimple.com/articles/a-record/) for the `discourse.example.com` hostname in your DNS control panel, pointing to the IP address of your cloud instance where you are installing Discourse.
+`sudo -s` to pass root
 
-### 6. Edit Discourse Configuration
+## Reverse proxy (on the discourse instance)
 
-Launch the setup tool at
+### Installation of reverse proxy
 
-    ./discourse-setup
+`apk update`
 
-Answer the following questions when prompted:
+`apk add nginx vim`
 
-    Hostname for your Discourse? [discourse.example.com]: 
-    Email address for admin account(s)? [me@example.com,you@example.com]: 
-    SMTP server address? [smtp.example.com]: 
-    SMTP port? [587]: 
-    SMTP user name? [user@example.com]: 
-    SMTP password? [pa$$word]: 
-    Let's Encrypt account email? (ENTER to skip) [me@example.com]: 
-    Optional Maxmind License key () [xxxxxxxxxxxxxxxx]:
+### Setup of reverse proxy
 
-You'll get the SMTP details from your [email](#email) setup, be sure to complete that section.
+- Copy content of /etc/nginx/http.d/default.conf
 
-Let's Encrypt account setup is to give you a free HTTPS certificate for your site, be sure to set that up if you want your site secure.
+`rc-update add nginx default`
 
-This will generate an `app.yml` configuration file on your behalf, and then kicks off bootstrap. Bootstrapping takes between **2-8 minutes** to set up your Discourse. If you need to change these settings after bootstrapping, you can run `./discourse-setup` again (it will re-use your previous values from the file) or edit `/containers/app.yml` manually with `nano` and then `./launcher rebuild app`, otherwise your changes will not take effect.
+`rc-service nginx start`
 
-### 7. Start Discourse
 
- Once bootstrapping is complete, your Discourse should be accessible in your web browser via the domain name `discourse.example.com` you entered earlier.
+## Discourse
 
-<img src="https://www.discourse.org/images/install/17/discourse-congrats.png" width="650">
+### Requirements of Discourse
 
-### 8. Register New Account and Become Admin
+- The Docker package is in the 'Community' repository.
 
-Register a new admin account using one of the email addresses you entered before bootstrapping.
+`apk add docker git`
 
-<img src="https://www.discourse.org/images/install/17/discourse-register.png" width="650">
+- To start the Docker daemon at boot
 
-<img src="https://www.discourse.org/images/install/17/discourse-activate.png" width="650">
+`rc-update add docker boot`
 
-(If you are unable to register your admin account, check the logs at `/var/discourse/shared/standalone/log/rails/production.log` and see our [Email Troubleshooting checklist](https://meta.discourse.org/t/troubleshooting-email-on-a-new-discourse-install/16326).)
+`service docker start`
 
-After registering your admin account, the setup wizard will launch and guide you through basic configuration of your Discourse.
+Source: https://wiki.alpinelinux.org/wiki/Docker
 
-<img src="https://www.discourse.org/images/install/17/discourse-wizard-step-1.png" width="650">
 
-After completing the setup wizard, you should see Staff topics and **READ ME FIRST: Admin Quick Start Guide**. This guide contains advice for further configuring and customizing your Discourse install.
+### Installation of Discourse
 
-<img src="https://www.discourse.org/images/install/17/discourse-homepage.png">
+- Create Discourse directory:
 
-### 9. Post-Install Maintenance
-
-- We strongly suggest you turn on automatic security updates for your OS. In Ubuntu use the `dpkg-reconfigure -plow unattended-upgrades` command. In CentOS/RHEL, use the [`yum-cron`](https://www.redhat.com/sysadmin/using-yum-cron) package.
-- If you are using a password and not a SSH key, be sure to enforce a strong root password. In Ubuntu use the `apt install libpam-cracklib` package. We also recommend `fail2ban` which blocks any IP addresses for 10 minutes that attempt more than 3 password retries.
-  - **Ubuntu**: `apt install fail2ban`
-  - **CentOS/RHEL**: `sudo dnf install fail2ban`
-- If you need or want a default firewall, [turn on ufw](https://meta.discourse.org/t/configure-a-firewall-for-discourse/20584) for Ubuntu or use `firewalld` for CentOS/RHEL.
-
-> 💡 Discourse will send you an email notification when new versions of Discourse are released. Please stay current to get the latest features and security fixes. 
-
-To **upgrade Discourse to the latest version**, visit `https://discourse.example.com/admin/upgrade` in your browser and click the Upgrade button.
-
-Alternatively, you can ssh into your server and rebuild using:
-
-```
-cd /var/discourse
-git pull
-./launcher rebuild app
-```
-
-The `launcher` command in the `/var/discourse` folder can be used for various kinds of maintenance:
-
-``` text
-Usage: launcher COMMAND CONFIG [--skip-prereqs] [--docker-args STRING]
-Commands:
-    start:      Start/initialize a container
-    stop:       Stop a running container
-    restart:    Restart a container
-    destroy:    Stop and remove a container
-    enter:      Use nsenter to get a shell into a container
-    logs:       View the Docker logs for a container
-    bootstrap:  Bootstrap a container for the config based on a template
-    rebuild:    Rebuild a container (destroy old, bootstrap, start new)
-    cleanup:    Remove all containers that have stopped for > 24 hours
-
-Options:
-    --skip-prereqs             Don't check launcher prerequisites
-    --docker-args              Extra arguments to pass when running docker
-```
-
-### 10. (Optional) Add More Discourse Features
-
-Do you want...
-
-* Users to log in *only* via your pre-existing website's registration system? [Configure Single-Sign-On](https://meta.discourse.org/t/official-single-sign-on-for-discourse/13045).
-
-- Users to log in via [Google](https://meta.discourse.org/t/configuring-google-oauth2-login-for-discourse/15858), [Twitter](https://meta.discourse.org/t/configuring-twitter-login-for-discourse/13395), [GitHub](https://meta.discourse.org/t/configuring-github-login-for-discourse/13745), or  [Facebook](https://meta.discourse.org/t/configuring-facebook-login-for-discourse/13394)?
-
-- Users to post replies via email? [Configure reply via email](https://meta.discourse.org/t/set-up-reply-via-email-support/14003).
-
-- Automatic daily backups? [Configure backups](https://meta.discourse.org/t/configure-automatic-backups-for-discourse/14855).
+`mkdir /var/discourse-fr`
  
-- Free HTTPS / SSL support? [Configure Let's Encrypt](https://meta.discourse.org/t/setting-up-lets-encrypt-cert-with-discourse-docker/40709). Paid HTTPS / SSL support? [Configure SSL](https://meta.discourse.org/t/allowing-ssl-for-your-discourse-docker-setup/13847).
+- Clone official Docker Discourse image in /var/discourse.
 
-- Use a plugin [from Discourse](https://github.com/discourse) or a third party? [Configure plugins](https://meta.discourse.org/t/install-a-plugin/19157) 
+`git clone https://github.com/discourse/discourse_docker.git /var/discourse-fr`
+ 
+### Setup of Discourse
 
-- Multiple Discourse sites on the same server? [Configure multisite](https://meta.discourse.org/t/multisite-configuration-with-docker/14084).
+`cd /var/discourse-fr`
+ 
+- Launch installation script
 
-- Webhooks when events happen in Discourse? [Configure webhooks](https://meta.discourse.org/t/setting-up-webhooks/49045).
+`./discourse-setup`
 
-- A Content Delivery Network to speed up worldwide access? [Configure a CDN](https://meta.discourse.org/t/enable-a-cdn-for-your-discourse/14857). We recommend [Fastly](http://www.fastly.com/).
+- Answer the following questions when prompted:
 
-- Import/migrate old content from vBulletin, PHPbb, Vanilla, Drupal, BBPress, etc? [See our open source importers](https://github.com/discourse/discourse/tree/main/script/import_scripts) and our [migration guide](https://meta.discourse.org/t/how-to-migrate-from-one-platform-forum-to-discourse/197236).
+```
+Hostname for your Discourse? [melba.io]: 
+Email address for admin account(s)? [paul-louis.bautes@foodmeup.io]: 
+SMTP server address? [email-smtp.eu-west-3.amazonaws.com]: 
+SMTP port? [587]: 
+SMTP user name? [user@example.com]: 
+SMTP password? [pa$$word]: 
+Let's Encrypt account email? (ENTER to skip) [me@example.com]: 
+Optional Maxmind License key () [xxxxxxxxxxxxxxxx]:
+```
 
-- A user friendly [offline page when rebuilding or upgrading?](https://meta.discourse.org/t/adding-an-offline-page-when-rebuilding/45238)
+- Delete `container/app.yaml`and get the `app-fr-yaml` file on the the repository.
 
-- To embed Discourse [in your WordPress install](https://github.com/discourse/wp-discourse), or [on your static HTML site](https://meta.discourse.org/t/embedding-discourse-comments-via-javascript/31963)?
 
-Help us improve this guide! Feel free to ask about it on [meta.discourse.org][meta], or even better, submit a pull request.
+- Then `./launcher rebuild app-fr`
 
-   [dd]: https://github.com/discourse/discourse_docker
-  [ssh]: https://help.github.com/articles/generating-ssh-keys
- [meta]: https://meta.discourse.org
-   [do]: https://www.digitalocean.com/?refcode=5fa48ac82415
-  [put]: http://www.chiark.greenend.org.uk/~sgtatham/putty/download.html
-  [mailconfig]: https://github.com/discourse/discourse/blob/main/docs/INSTALL-email.md
+
+# Add a new language
+
+## On CloudFront:
+
+- Add 2 behaviours with the followings parameters:
+	- Path pattern: /en/forum
+    - Origin: forum.melba.io
+    - Viewer protocol policy: Redirect HTTP to HTTPS
+    - Cache policy name: Managed-CachingDisabled
+    - Origin request policy name: Managed-AllViewer
+- Second one:
+	- Path pattern: /en/forum/*
+    - Origin: forum.melba.io
+    - Viewer protocol policy: Redirect HTTP to HTTPS
+    - Cache policy name: Managed-CachingDisabled
+    - Origin request policy name: Managed-AllViewer
+
+## On the reverse proxy:
+
+- Add an upstream:
+
+```
+upstream forum-en {
+     server localhost:8082; ### THE NEW PORT OF THE FUTURE CONTAINER
+}
+```
+
+- In the `server` section add the 2 followings locations:
+
+```
+      location /en/forum {
+      proxy_pass http://forum-en;
+      }
+
+      location /en/forum/ {
+      proxy_pass http://forum-en;
+      }
+```
+
+- Reload nginx
+
+## On Discourse
+
+- Repeat the intallation steps and create a new app file `app-en.yaml` instead of `app-fr.yaml`
+
+- Edit it and modify the "fr" terms:
+
+- Then `./launcher rebuild app-en`
